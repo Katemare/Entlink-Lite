@@ -1,0 +1,4 @@
+<?
+include('def.php');
+
+?>
