@@ -1,5 +1,5 @@
 <?
-class Entity
+abstract class Entity
 {
 	// в этой переменной хранятся все созданные объекты-сущности по их уникальным идентификаторам, взятым из БД. здесь нет сущностей, у которых ещё нет уникального идентификатора, потому что они ещё не сохранены или не заполнены, к примеру!
 	static $entities_by_uni=array();
@@ -11,6 +11,20 @@ class Entity
 	// данные о данных - допустимы ли они, изменились ли, получены ли и откуда...
 	// в том числе очень важный массив в ключе model.
 	public $metadata=array();
+	// got_data = true, false. Получены ли данные? Для комбо (здесь и ниже) - все данные.
+	// checked = true, false. Были ли данные проверены?
+	// valid = true, false. Действительны ли данные? Не введено ли в поле, предназначенное для числа от 1 до 100, значения "0" или "вася"? Для комбо также учитывает правильное сочетание данных (например, сумма статов не больше Х).
+	// correctable = true, false. Если данные не действительны, могут ли они быть откорректированы (хотя бы заменены на значения по умолчанию)?
+	// corrected = true, false. Были ли данные откорректированы?
+	// safe = true, false. Безопасны ли данные? Подразумевается отсутствие символов, которых не может в них быть по смыслу, например, не употребляющихся при вводе. Опасные символы, такие как апострофы для БД или угловые скобки для html, должны устраняться на месте выводав соответствующий формат, без изменений строки.
+	// securable = true, false. Могут ли быть данные исправлены для восстановления безопасности?
+	// secured = true, false. Были ли данные исправлены ради безопасности.
+	// normalized = true, false. Приведены ли данные в стандартную форму? Например, перенос строки приравнен к линуксовому стандарту.
+	// source = 'default', 'DB', 'input', 'updated', 'mixed' (combo only)
+	// changed = true, false. Были ли данные исправлены программой после получения.
+	// ready = got_data && safe && valid
+	public $autosafe=true, $autocorrect=false, $autonormal=true;
+	// эти переменные устанавливают, следует ли объекту автоматичесски исправлять данные.
 
 	public $uni=0;
 	// уникальный идентификатор сущности, по которому она известна в БД. только для сущностей, сохранённых в БД.
@@ -53,9 +67,7 @@ class Entity
 	
 	// эта функция проверяет легальность и исправляемость данных. 
 	// STUB: функция ещё не написана!
-	public function analyzeData()
-	{
-	}
+	public abstract function analyzeData();
 	
 	// эта функция достаёт данные из массива данных. по умолчанию - только готовые, валидные данные.
 	public function getValue($code='value', $readied=true)
@@ -128,14 +140,17 @@ class Entity
 		$this->metadata['source']=$source;
 		// хотя некоторые источники данных не нуждаются в проверке, это функции проверки решит сама. чтобы все правила были там, а не раскиданы по коду.
 		$this->metadata['checked']=false;
-		$this->metadata['correct']=false;
+		$this->metadata['valid']=false;
 		$this->metadata['safe']=false;
 	}
+
+	public abstract function analyzeData();
+
 	
 	// конструирование сущности связано как с отображением, так и с хранением.
 	public function __construct()
 	{
-		$this->formats=self::$def_formats;
+		$this->setFormats();
 	}	
 	
 	###############
@@ -153,11 +168,16 @@ class Entity
 	// FIX: возможно, следует просчитывать это ещё в статике, чтобы не для каждого экземпляра по разу?
 	public $formats=array();
 	
+	public function SetFormats()
+	{
+		$this->formats=self::$def_formats;
+	}		
+	
 	// эта основная функция, вызывающая отображение.
 	// $context - объект класса Context, который курирует отображение как цельный процесс.
 	// в первую очередь он хранит стадию отображения. Сначала нужно собрать все данные, потом - отображать целиком, так экономятся запросы.
 	// $args - параметры, которые надо учесть при отображении (массив).
-	public function display($context, $args='')
+	public function display($args='', $context=null)
 	{
 		// if (is_array($args)) $args=$this->mergeArgs($args);
 		//return $this->expandFormat('%display'.(($args<>'')?('['.$args.']'):('')).'%', $context);
@@ -177,7 +197,7 @@ class Entity
 		$this->analyzeContext($context);
 		debug('xFormat: '.htmlspecialchars($format));
 		$result=preg_replace_callback(
-			'/%(?<code>[\<\>]?[a-z_0-9]+)(\[(?<args>[^\]]+)\])?%/i',
+			'/%(?<code>[\<\>]?[a-z_0-9]+)(\[(?<args>[^\]]+)\])?%/i', // формат имеет вид текста, где следующий код подставляется сущностью: %code[arg1;arg2=val]%
 			array($this, 'expandCode_callback'),
 			$format
 			);
@@ -219,24 +239,26 @@ class Entity
 				debug('req_member: '.$member_code);
 				$this->req_member($member_code, $context, $args); // запросить информацию, необходимую для показа сущности в таком виде.
 				// впоследствии этот запрос передаётся сущности, а она уже разбирается, какая информация ей нужна. Если ей нужна ещё одна стадия опроса, это делается автоматически после запуска метода received.
+				// этот запрос не учитывает дополнительный код, в котором может понадобиться связанная сущность. Такой код должен раскрываться одной из ветвей ниже, и если в нём есть упоминание сырого объекта - то передаётся запрос display с соответствущими аргументами. однако это применение не позволяет запрость данные сущности помимо тех, которые связаны с показом... Что вполне нормально для редактирования (редактируются только те данные, у которых были поля в форме), но для некоторых других применений этого может быть мало. 
+				// с другой стороны, одна сущность не должна слишком лезть в особенности другой, так что может быть передача простой команды "покажись, вот контекст и аргументы" достаточно.
 				$result='REQ_MEMBER: '.$member_code; //$args['default'];
 			}
-			else //if ($context->display_values()) // этап показа данных.
+			elseif ($context->display_values()) // этап показа данных.
 			{
-				$member=$this->get_member($member_code, $args); // получить связанную сущность. аргументы скорее всего ненужны, но мало ли...
-				if ($member instanceof Entity) $result=$member->display($context, $args); // она показывается.
+				$member=$this->data[$member_code];
+				if ($member instanceof Entity) $result=$member->display($args, $context); // она показывается.
 				//else $result=$this->expandFormat('%error[no_member;ask='.$link.']%');
 				else $result=$this->expandCode('error', array('ask'=>$member_code), $context);
 			}
 		}
 		elseif (array_key_exists($code, $this->formats)) // если для данного кода задан формат.
 		{
-			if (is_string($this->formats[$code])) // формат может быть строковый, тогда разбираем его как строку.
+			if (is_string($this->formats[$code])) // формат может быть строковый, тогда разбираем его как строку. в таком случае аргументы не используются.
 			{
 				$result=$this->expandFormat($this->formats[$code]);
 			}
 			elseif (is_array($this->formats[$code])) // или формат может представлять из себя указание на объект и метод, которому нужно переадресовать отображение. это делается для случаев, когда отображение требует логики.
-			// первый аргумент - кого опросить, второй - название функции.
+			// первый аргумент - кого опросить, второй - название функции. первый аргумент сейчас использует только значение 'self'.
 			{
 				$obj=$this; // пока что можно обращаться только с ебе.
 				
@@ -259,6 +281,7 @@ class Entity
 		else // не найдено способа обработать код.
 		{
 			$result= $args['default']; // считаем, что это и не код вовсе.
+			// надо сказать, что при использовании функции display этот элемент массива пуст, потому что обращение идёт сразу к данной функции, без первоначального формата.
 		}
 		// else ERR
 		
@@ -306,50 +329,10 @@ class Entity
 		$source['original']=$result;
 		return $result;
 	}
-	
-	// анализирует легальность, корректируемость и прочие параметры данных.
-	// FIX! в связи с прочими изменениями должно быть написано иначе.
-	public function analyzeData()
-	{
-		$good=array(
-			'checked'=>1,
-			'safe'=>1,
-			'correct'=>1
-		);
-		$bad=array(
-			'checked'=>1,
-			'safe'=>false,
-			'safe potential'=>false,
-			'correct'=>false,
-			'correctable'=>false,
-			'errors'=>array()
-		);
-		if ($this->metadata['checked']) return;
 		
-		$result=array();
-		$realcheck=true;
-		
-		if ( (is_null($this->metadata['source'])) || (!$this->metadata['got_data']) )
-		{
-			$result=$bad;
-			$result['errors'][]='no data';
-		}
-		elseif (in_array($this->metadata['source'], array('DB', 'default')))
-		{
-			$result=$good;
-		}
-		else
-		{
-			//$result=$good;
-			$realcheck=false; // replace me!
-		}
-		
-		if (count($result)>0) $this->metadata=array_merge($this->metadata, $result);
-		return $realcheck;
-	}
-	
 	public function error($args, $context)
 	{
+		$this->analyzeContext();
 		return $args[0];
 	}	
 }
