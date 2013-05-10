@@ -22,12 +22,15 @@ spl_autoload_register('autoloader_plugins');
 $entlink_classes=array();
 
 // STUB
-$plugins=array('pokemon');
+//$plugins=array('pokemon');
+$plugins=array('test');
 
 foreach ($plugins as $plugin)
 {
 	//STUB
-	$path=$_SERVER['DOCUMENT_ROOT'].'/v3/classes/'.$plugin.'/init.php';
+	// $server='/storage/emulated/legacy/php files/';
+	// $path=$_SERVER['DOCUMENT_ROOT'].'v3/classes/'.$plugin.'/init.php';
+	$path='classes/'.$plugin.'/init.php';
 	
 	include($path);
 	$class='Plugin_'.$plugin;
@@ -36,7 +39,7 @@ foreach ($plugins as $plugin)
 	{
 		foreach ($classes['types'] as $type)
 		{
-			$entlink_classes['EntityFactory_'.$type]=$plugin;
+			$entlink_classes['Entity_'.$type]=$plugin;
 		}
 	}
 }

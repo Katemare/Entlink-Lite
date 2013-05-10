@@ -35,7 +35,7 @@ class Entity_post_journal extends Entity_post
 	public function setModel()
 	{
 		parent::setModel();
-		if (count(self::$mod_model)) $this->mergeModel(self::$mod_model);
+		if (count(self::$mod_model)>0) $this->mergeModel(self::$mod_model);
 	}
 }
 ?>

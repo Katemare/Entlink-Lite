@@ -3,6 +3,7 @@ abstract class Entity
 {
 	// в этой переменной хранятся все созданные объекты-сущности по их уникальным идентификаторам, взятым из БД. здесь нет сущностей, у которых ещё нет уникального идентификатора, потому что они ещё не сохранены или не заполнены, к примеру!
 	static $entities_by_uni=array();
+	static $next_id=0;
 	
 	public $type=null; // по сути то же самое, что стоит в названии класса после Entity_
 
@@ -26,8 +27,42 @@ abstract class Entity
 	public $autosafe=true, $autocorrect=false, $autonormal=true;
 	// эти переменные устанавливают, следует ли объекту автоматичесски исправлять данные.
 
-	public $uni=0;
+	public $uni=0, $id=0;
 	// уникальный идентификатор сущности, по которому она известна в БД. только для сущностей, сохранённых в БД.
+
+	public $model=array();
+	
+	static $mod_model=array();
+
+	public function __construct()
+	{
+		$this->id=Entity::$next_id;
+		Entity::$next_id++;
+	
+		$this->setModel();	
+		$this->setFormats();
+	}	
+
+		
+	public function setModel()
+	{
+		if (count(self::$mod_model)>0) $this->mergeModel(self::$mod_model);
+	}
+	
+	public function mergeModel($tomerge)
+	{
+		foreach ($tomerge as $key=>$params)
+		{
+			if (!array_key_exists($key, $this->model)) $this->model[$key]=$params;
+			else
+			{
+				foreach ($params as $param=>$val)
+				{
+					$this->model[$key][$param]=$val;
+				}
+			}
+		}
+	}
 	
 	// устанавливает уникальный иденифтикатор и вписывает сущность в общий массив.
 	public function setUni($uni)
@@ -39,21 +74,74 @@ abstract class Entity
 		if ($uni>0) Entity::$entities_by_uni[$uni]=$this;
 		// ERR: нет обработки ошибки
 	}
+	public function getUni()
+	{
+		return $this->uni;
+	}
+	
+	public $context=null;
 	
 	// эта функция вызывается, когда Ретривер получил запрошеные данные.
-	// FIX: она должна быть переписана!
-	public function receive($tables, $context, $args)
+	public function receive($args)
 	{
 		debug('received '.$this->id);
-		if ((!$this->metadata('typed'))&&(in_array('entities', $tables)))
+		$member_code=$args['member_code'];
+		$member=$this->fillMember($member_code);
+		if (! ($member instanceof Entity)) $member=$this->fillMember($member_code);
+		elseif (($member->metadata['got_data'])&&($member->metadata['source']=='DB')) return; // STUB!
+		if (array_key_exists('value', $args)) $value=$args['value'];
+		else
 		{
-			$result=EntityFactory::build_by_Retriever($this);
-			if (!$result) { } // ERR - not found
+			$submodel=$this->model[$member_code];
+			$value=EntityRetriever::$data[$submodel['table']][$this->uni][$submodel['field']];
 		}
-		// elseif (!$this->metadata('typed)) { } //ERR
-		$this->prepare_storage();
-		$this->storage->receive($tables, $context, $args);
+		$member->setValue($value, 'DB');
 	}
+	
+	public function receive_mass($mass)
+	{
+		foreach ($mass as $member_code=>$value)
+		{
+			$args=array('member_code'=>$member_code, 'value'=>$value);
+			$this->receive($args);
+		}
+	}
+	
+	public function fillMember($code, $submodel=null)
+	{
+		if ( (isset($this->data[$code])) && ($this->data[$code] instanceof Entity) ) return $this->data[$code];
+
+		debug('+++'.$code);
+		if (is_null($submodel)) $submodel=$this->model[$code]; // ERR: нет ообработки ошибки, если субмодель не массив.
+		$class='Entity_'.$submodel['type'];
+		$member=new $class();
+		$member->model=$submodel;
+		$this->data[$code]=$member;	
+		return $member;
+	}
+	
+	public function req_member($member_code, $args, $context)
+	{
+		$this->analyzeContext($context);
+		if (!array_key_exists($member_code, $this->model)) return false;
+		$member=$this->fillMember($member_code);
+		if ($member->metadata('got_data')) return true;
+		if ($member instanceof Entity_combo)
+		{
+			$member->parse($args, $context);
+		}
+		elseif ($member instanceof Entity_value)
+		{
+			$submodel=$this->model[$member_code];		
+			// сущности-значения обычно представляют одно поле таблицы и не знают, где это поле должно быть расположено. Они только знают, какие данные в них должны находиться и как эти данные показывать.
+//			var_dump($submodel);
+			EntityRetriever::req($this->uni, $submodel['table'],  array('target'=>$this, 'args'=>array('member_code'=>$member_code)) );
+			// по умолчанию данные нужно искать в таблице из модели под уникальным идентификатором сущности, а потом сообщать о полученных данных в сущность.
+			// поскольку речь идёт о сущности-значении, никакие изыски демонстрации не могут вызвать запроса на допанные (предположительно), так что сохранять аргументы и контекст не надо?
+		}
+		
+	}
+	
 	
 	// именно через эту функцию нужно обращаться к метаданным. Это позволяет проверить легальность содержимого по запросу, а не сразу, когда данные ещё могут быть не цельными.
 	public function metadata($code='')
@@ -66,15 +154,16 @@ abstract class Entity
 	}
 	
 	// эта функция проверяет легальность и исправляемость данных. 
-	// STUB: функция ещё не написана!
 	public abstract function analyzeData();
 	
 	// эта функция достаёт данные из массива данных. по умолчанию - только готовые, валидные данные.
 	public function getValue($code='value', $readied=true)
 	{
-		if (($readied)&&(!$this->metadata('ready'))) return null;
-		if (array_key_exists($code, $this->data)) return $this->data[$code];
-		return null;
+		if (empty($code)) $code='value';
+		if (($readied)&&(!$this->metadata('ready'))) $result=null;
+		elseif (array_key_exists($code, $this->data)) $result =$this->data[$code];
+		else $result=null;
+		return $result;
 	}
 	
 	// эта функция устанавливает хранящиеся в сущности данные.
@@ -90,8 +179,9 @@ abstract class Entity
 	// null - стирает данные.
 	
 	// $rewrite - переписывать ли данные, если они уже есть.
-	public function setValue($value, $source, $rewrite=true)
+	public function setValue($value, $source)
 	{
+		debug('xSet '.$value.' ('.$source.')');
 		if (is_null($source))
 		{
 			// FIX! стирание данных должно проходить иначе.
@@ -104,31 +194,31 @@ abstract class Entity
 		
 		// проверяем, были ли данные изменены по сравнению с БД. 
 		// FIX: эта часть должна быть написана иначе!
-		$changed=false;
-		if ( ($source=='update') || (($source=='input')&&(!$this->metadata['changed'])) )
+		$different=false;
+		if (
+			(count(array_diff_key($this->data, $set))>0) ||
+			(count(array_diff_key($set, $this->data))>0)
+			)
+			$different=true;
+		else
 		{
 			foreach ($set as $key=>$val)
 			{
 				if ($this->data[$key]!==$val)
 				{
-					$changed=1;
+					$different=true;
 					break;
 				}
 			}
-			
-			if (($rewrite)&&(!$changed))
-			{
-				$diff=array_diff(array_keys($this->data), array_keys($set));
-				if (count($diff)>0) $changed=1;
-			}
 		}
-		else $changed=$this->metadata['changed'];
-		
-		
-		if (($rewrite)&&($changed)) $this->data=$set;
-		elseif ((!$rewrite)&&($changed)) $this->data=array_merge($this->data, $set);
-		
-		$this->metadata['changed']=$changed;
+	
+		if ($different)
+		{
+			// FIX: кажется, этот элемент теряется при анализе данных.
+			if (!$this->metadata['changed']) $this->metadata['changed']=true;
+			$this->data=array_merge($this->data, $set);
+		}
+
 		$this->setSource($source);
 	}
 	
@@ -143,16 +233,7 @@ abstract class Entity
 		$this->metadata['valid']=false;
 		$this->metadata['safe']=false;
 	}
-
-	public abstract function analyzeData();
-
-	
-	// конструирование сущности связано как с отображением, так и с хранением.
-	public function __construct()
-	{
-		$this->setFormats();
-	}	
-	
+		
 	###############
 	### display ###
 	###############
@@ -160,34 +241,58 @@ abstract class Entity
 	// форматы отображения, свойственные конкретно этому классу, а не его предкам.
 	// FIX
 	static $def_formats=array(
-		'display'=>'%error%',
-		'error'=>array('self', 'error')
+		'parse'=>array('func', 'parse'),
+		'uni'=>array('func', 'getUni'),
+		'error'=>array('func', 'error'),
+		
+		'form_new'=>'%error[inherit_me]%',
+		'form_edit'=>'%error[inherit_me]%',
+		'input_new'=>'%error[inherit_me]%',
+		'input_edit'=>'%error[inherit_me]%',
+		'values_html'=>'%error[inherit_me]%'		
 	);
 
 	// форматы отображения, складывающиеся из наследования и, возможно, обработки модулями.
 	// FIX: возможно, следует просчитывать это ещё в статике, чтобы не для каждого экземпляра по разу?
 	public $formats=array();
 	
-	public function SetFormats()
+	public function setFormats()
 	{
 		$this->formats=self::$def_formats;
-	}		
-	
+	}
+			
 	// эта основная функция, вызывающая отображение.
 	// $context - объект класса Context, который курирует отображение как цельный процесс.
 	// в первую очередь он хранит стадию отображения. Сначала нужно собрать все данные, потом - отображать целиком, так экономятся запросы.
 	// $args - параметры, которые надо учесть при отображении (массив).
-	public function display($args='', $context=null)
+	public function parse($args='', $context=null)
 	{
-		// if (is_array($args)) $args=$this->mergeArgs($args);
-		//return $this->expandFormat('%display'.(($args<>'')?('['.$args.']'):('')).'%', $context);
-		return $this->expandCode('display', $args, $context);
+		$this->analyzeContext();
+		if (!is_array($args)) $args=array();
+		if  ( (!array_key_exists('mode', $args)) || ($args['mode']=='')) $args['mode']=$this->evaluateParseMode($context);
+		return $this->expandCode($args['mode'], $args, $context);
+	}
+	
+	public function evaluateParseMode($context=null)
+	{
+		$this->analyzeContext();
+		
+		$args=array(); $mode='error';
+		$root=($context->root==$this);
+		if (($context->purpose=='new')&&($root)) $mode='form_new';
+		elseif ($context->purpose=='new') $mode='input_new';
+		elseif (($context->purpose=='edit')&&($root)) $mode='form_edit';
+		elseif ($context->purpose=='edit') $mode='input_edit';
+		elseif ($context->display_values()) $mode='values_'.$context->format;
+
+		return $mode;
 	}
 	
 	// поскольку данный код не использует возможности "closures" явно передавать аргументы в функцию по callback, то контекст приходится выуживать вот так...
-	public function analyzeContext(&$context)
+	public function analyzeContext(&$context=null)
 	{
 		if (is_null($context)) $context=$this->context;
+		elseif (! ($context instanceof Context)) debug ('xContext error!');
 		elseif ($context!==$this->context) $this->context=$context;	
 	}
 	
@@ -210,12 +315,13 @@ abstract class Entity
 	{
 		debug('xCode cb'.$this->id.': '.$m[0].' ('.$m['code'].')');
 		
-		$args=$this->parseArgs($m['args']);
+		if (isset($m['args'])) $args=$this->parseArgs($m['args']);
+		else $args=array();
 		$code=$m['code'];
 		
 		// в двух элементах массива сохраняется строковый список аргументов и весь код целиком, что-то вроде кэша.
 		if (!array_key_exists('default', $args)) $args['default']=$m[0];
-		if (!array_key_exists('original', $args)) $args['original']=$m['args'];
+		if ( (!array_key_exists('original', $args)) && (isset($m['args'])) ) $args['original']=$m['args'];
 		
 		return $this->expandCode($code, $args);
 	}	
@@ -237,16 +343,17 @@ abstract class Entity
 			if ($context->do_req()) // этап сбора информации.
 			{
 				debug('req_member: '.$member_code);
-				$this->req_member($member_code, $context, $args); // запросить информацию, необходимую для показа сущности в таком виде.
+				$this->req_member($member_code, $args, $context); // запросить информацию, необходимую для показа сущности в таком виде.
 				// впоследствии этот запрос передаётся сущности, а она уже разбирается, какая информация ей нужна. Если ей нужна ещё одна стадия опроса, это делается автоматически после запуска метода received.
-				// этот запрос не учитывает дополнительный код, в котором может понадобиться связанная сущность. Такой код должен раскрываться одной из ветвей ниже, и если в нём есть упоминание сырого объекта - то передаётся запрос display с соответствущими аргументами. однако это применение не позволяет запрость данные сущности помимо тех, которые связаны с показом... Что вполне нормально для редактирования (редактируются только те данные, у которых были поля в форме), но для некоторых других применений этого может быть мало. 
+				// этот запрос не учитывает дополнительный код, в котором может понадобиться связанная сущность. Такой код должен раскрываться одной из ветвей ниже, и если в нём есть упоминание сырого объекта - то передаётся запрос parse с соответствущими аргументами. однако это применение не позволяет запрость данные сущности помимо тех, которые связаны с показом... Что вполне нормально для редактирования (редактируются только те данные, у которых были поля в форме), но для некоторых других применений этого может быть мало. 
 				// с другой стороны, одна сущность не должна слишком лезть в особенности другой, так что может быть передача простой команды "покажись, вот контекст и аргументы" достаточно.
 				$result='REQ_MEMBER: '.$member_code; //$args['default'];
 			}
-			elseif ($context->display_values()) // этап показа данных.
+			elseif ($context->display_something()) // этап показа данных.
+			// FIX! где-то тут может быть проверка прав. 
 			{
 				$member=$this->data[$member_code];
-				if ($member instanceof Entity) $result=$member->display($args, $context); // она показывается.
+				if ($member instanceof Entity) $result=$member->parse($args, $context); // она показывается.
 				//else $result=$this->expandFormat('%error[no_member;ask='.$link.']%');
 				else $result=$this->expandCode('error', array('ask'=>$member_code), $context);
 			}
@@ -258,16 +365,33 @@ abstract class Entity
 				$result=$this->expandFormat($this->formats[$code]);
 			}
 			elseif (is_array($this->formats[$code])) // или формат может представлять из себя указание на объект и метод, которому нужно переадресовать отображение. это делается для случаев, когда отображение требует логики.
-			// первый аргумент - кого опросить, второй - название функции. первый аргумент сейчас использует только значение 'self'.
 			{
-				$obj=$this; // пока что можно обращаться только с ебе.
-				
-				//if ($result=='')
+				$subformat=$this->formats[$code];
+				if ($subformat[0]=='func')
 				{
-					$method=$this->formats[$code][1];
+					debug ('xCode func');
+					$obj=$this; // пока что можно обращаться только с ебе.
+					
+					$method=$subformat[1];
+					debug ('xCode method '.$method);
 					//if ($method=='expandCode') $result= $this->expandFormat($obj->expandCode($code, $args, $context)); // 
 					//else $result=$this->expandFormat($obj->$method($args, $context));
 					$result=$obj->$method($args, $context);
+				}
+				elseif ($subformat[0]=='syn')
+				{
+					$result=$this->expandCode($subformat[1], $args, $context);
+				}
+				elseif ($subformat[0]=='expand')
+				{
+					if (isset($subformat['args'])) $args=$subformat['args']; else $args=array();
+					$result=$this->expandCode($subformat[1], $subformat['args'], $context);
+				}
+				elseif ($subformat[0]=='dic')
+				{
+					$args=array('code'=>$subformat[1], 'call'=>$this);
+					$result=$context->dic->translate($args, $context);
+					if ($context->display_something()) $result=$this->expandFormat($result, $context);
 				}
 			}
 			
@@ -281,7 +405,7 @@ abstract class Entity
 		else // не найдено способа обработать код.
 		{
 			$result= $args['default']; // считаем, что это и не код вовсе.
-			// надо сказать, что при использовании функции display этот элемент массива пуст, потому что обращение идёт сразу к данной функции, без первоначального формата.
+			// надо сказать, что при использовании функции parse этот элемент массива пуст, потому что обращение идёт сразу к данной функции, без первоначального формата.
 		}
 		// else ERR
 		
@@ -333,6 +457,7 @@ abstract class Entity
 	public function error($args, $context)
 	{
 		$this->analyzeContext();
+		debug ('xError '.((is_array($args))?($args[0]):($args)) );
 		return $args[0];
 	}	
 }

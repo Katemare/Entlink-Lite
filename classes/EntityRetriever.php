@@ -9,39 +9,16 @@
 class EntityRetriever extends EntityDBOperator
 {
 	const MAX_CYCLE=10;
-	public static $queue=array();
+	public static $calls=array();
 
 	public static $queries=array();
 	// в этом массиве хранятся пары "таблица => список идентификаторов". это очередь на получение данных.
-	
-	public static $link_queries=array();
-	/* массив идентификаторов сущностей, связи которых нужно получить. существует в виде пар:
-	
-		"уник. идентификатор => массив('A'=>типы связи, 'B'=>типы связи)". если в A и B списки совпадают, php всё равно экономит место и хранит их как один массив.
-		
-		или:
-		
-		"уник. идентификатор => 'all' - все связи.
-	*/
-	// STUB: нужно как-то регулирвать, какие связи получать, а какие игнорировать. например, не всегда нужен список комментов или, например, данные об атаках.
-	// возможно, стоит хранить не массив идентификаторов, а массив ссылок на сущности? тогда их можно опрашивать, однако не сделаешь простого implode.
+	public static $queries_by_conditions=array();
+	// аналогично, но вместо списка идентификаторов - массив условий.
 	
 	public static $data=array();
 	// здесь хранятся данные. ретривер не стирает их до самого конца прогона программы, чтобы не запоминать, сколько объектов запросили данные и когда они уже не понадобятся. в любом случае копии массивов в php хранятся как один экземпляр в памяти, пока не будет внесено изменение.
-	
-	public static $links=array();
-	/* здесь находятся данные о связях в следующем виде:
-	
-		уник. связанной сущности => массив (
-			индекс:тип связи => массив (
-				уник. связи => строка из БД
-				уник. связи => ...
-			)
-			индекс:другой тип связи =>...
-		)
-		уник. другой связанной сущности => ...
-	*/
-	
+		
 	public static function received($queue_data)
 	{
 	// ERR
@@ -58,6 +35,88 @@ class EntityRetriever extends EntityDBOperator
 		else $entity->$ask->$method($queue_data['tables'], $queue_data['context'], $queue_data['args']);
 	}
 	
+	public static function makeCall($call)
+	{
+		if ($call instanceof Entity) $call->receive();
+		elseif (is_array($call))
+		{
+			debug('xCall '.$call['target']->id.' '); var_dump($call['args']);
+			$target=$call['target'];
+			if (array_key_exists('method', $call)) $method=$call['method'];
+			else $method='receive';
+			if (array_key_exists('args', $call)) $args=$call['args'];
+			else $args=null;
+			
+			if (is_null($args)) $target->$method();
+			else $target->$method($args);
+		}
+	}
+	
+	public static function req_by_condition($conditions, $table, $call)
+	{
+		foreach ($conditions as $key=>$condition)
+		{
+			
+		}
+	}
+	
+	public static function retrieve_by_conditions($table=null)
+	{
+		if (is_null($table))
+		{
+			foreach (static::$queries_by_conditions as $table=>$conditions)
+			{
+				static::retrieve_by_conditions($table);
+			} 
+		}
+		else
+		{
+			$conditions=static::$queries_by_conditions[$table];
+			$mergeable=array(); $unmergeable=array();
+			foreach ($conditions as $key=>$condset)
+			{
+				$numkeys=false;
+				foreach ($condset as $key2=>$cond)
+				{
+					if (is_numeric($key2))
+					{
+						$numkeys=true;
+						break;
+					}
+				}
+				if (!$numkeys)
+				{
+					$fields_hash=implode(',', sort(array_keys($condset)));
+					if (!isset($mergeable[$fields_hash])) $mergeable[$fields_hash]=array();
+					$mergeable[$fields_hash][]=$key;
+				}
+				else $unmergeable[]=$key;
+			}
+			
+			foreach ($mergeable as $keys)
+			{
+				$field_vals=array();
+				foreach ($keys as $key)
+				{
+					$condset=$conditions[$key];
+					foreach ($condset as $field=>$val)
+					{
+						if (!isset($field_vals[$field])) $field_vals[$field]=array();
+						$field_vals[]=$val;
+					}
+				}
+				$field_counts=array();
+				foreach ($field_vals as $field=>$vals)
+				{
+					$field_vals[$field]=array_unique($vals);
+					$field_counts[$field]=count($field_vals[$field]);
+				}
+				asort($field_counts);
+				
+			}
+		}
+	}
+	
 	public static function req($id, $table='entities', $call=null)
 	{
 		if (is_array($table))
@@ -66,7 +125,8 @@ class EntityRetriever extends EntityDBOperator
 			$table=array_unique($table);
 			foreach ($table as $t)
 			{
-				$result[$t]=static::req($t, $id);
+				// $result[$t]=static::req($t, $id, $call);
+				static::req($t, $id, $call);
 			}
 			return $result;
 		}
@@ -76,7 +136,8 @@ class EntityRetriever extends EntityDBOperator
 			$id=array_unique($id);
 			foreach ($id as $i)
 			{
-				$result[$i]=static::req($table, $i);
+				// $result[$i]=static::req($table, $i, $call);
+				static::req($table, $i, $call);
 			}
 			return $result;
 		}
@@ -84,160 +145,24 @@ class EntityRetriever extends EntityDBOperator
 		{
 			if (!is_numeric($id))
 			{
+				// эта функция преобразует некоторые строковые идентификаторы в уникальный идентификатор. Это нужно в случае, если мы не знаем точно уникальный идентификатор, но знаем, какая функционально сущность требуется.
 				$id=static::unize($id);
 			}
 			if (
 				(is_numeric($id)) &&
-				(is_array(static::$data[$table])) &&
+				(isset(static::$data[$table])) &&
 				(array_key_exists($id, static::$data[$table]))
 				)
 			{
-				if ($who instanceof Entity) $who->receive();
-				elseif (EntityFactory::exists($id)) EntityFactory::$entities_by_uni[$id]->receive();
-				return static::$data[$table][$id];
+				// запрашиваемые данные уже получены.
+				if (!is_null($call)) static::makeCall($call);
+				static::$data[$table][$id];
+				return;
 			}
 			
+			// данные ещё не получены.
 			static::$queries[$table][]=$id;
-			if ($call instanceof Entity)
-			{
-				$data=array('entity'=>$call, 'tables'=>array($table));
-				static::add_to_queue($data);
-			}
-			elseif (is_array($call))
-			{
-				$call['tables']=array($table);
-				static::add_to_queue($call);
-			}
-			return false;
-		}
-	}
-	
-	public static function req_links($id, $types='all')
-	{
-		if (is_array($id))
-		{
-			foreach ($id as $i)
-			{
-				static::req_links($i, $types);
-			}
-		}
-		elseif ($id instanceof Entity)
-		{
-			if ($id->uni>0) static::req_links($id->uni, $types);
-			else static::req_links('uni'.$id->id, $types);
-		}
-		else
-		{
-			if (!is_numeric($id))
-			{
-				$id=static::unize($id);
-			}
-			
-			if (!array_key_exists($id, static::$link_queries, 1))
-			{
-				static::$link_queries[$id]=$types;
-			}
-			elseif ($types==='all')
-			{
-				if (static::$link_queries[$id]==='all') return;
-				static::$link_queries[$id]='all';
-			}
-			else
-			{
-				foreach ($types as $index=>$connections)
-				{
-					if (!array_key_exists($index, static::$link_queries[$id]))
-					{
-						static::$link_queries[$id][$index]=$connections;
-						continue;
-					}
-					static::$link_queries[$id][$index]=array_merge(static::$link_queries[$id][$index], $connections);
-				}
-			}
-		}
-	}
-	
-	public static function compact_link_queries($query, $uni, &$queries=array() )
-	{
-		$hash=static::compose_where($query['where'], $query['where_operator']);
-		if (array_key_exists($hash, $queries, 1))
-		{
-			$queries[$hash]['uni'][]=$uni;
-		}
-		else
-		{
-			$query['action']='select';
-			$query['table']=static::$db_prefix.'entities_link';
-			$queries[$hash]['query']=$query;
-			$queries[$hash]['uni'][]=$uni;
-		}
-	}
-	
-	public static function get_links($who)
-	{
-		// WIP: нужно получить (из кэша?) список связей, требуемых объекту!
-		
-		$pile=array();
-		foreach (static::$link_queries as $uni=>$types)
-		{
-			if ($types==='all')
-			{
-				$query=array(
-					'where'=>array('uniID1'=>'%uni%', 'uniID2'=>'%uni%'),
-					'where_operator'=>'OR'
-				);
-				static::compact_link_queries($query, $uni, $pile);
-			}
-			elseif (is_array($types))
-			{
-				foreach ($types as $index => $connections)
-				{
-					$connections=array_unique($connections);
-					$query=array(
-						'where'=>array(
-							(($index==='A')?('uniID1'):('uniID2')) => '%uni%',
-							'connection'=>$connections
-						)
-					);
-					static::compact_link_queries($query, $uni, $pile);
-				}
-			}
-		}
-		unset (static::$link_queries);
-		
-		if (count($pile)>0)
-		{
-			// компонуем похожие запросы.
-			$queries=array();
-			foreach ($pile as $hash=>$list)
-			{
-				$uni=$list['uni'];
-				$query=$list['query'];
-				foreach ($query['where'] as &$condition)
-				{
-					if ($condition==='%uni%') $condition=$uni;
-				}
-				$queries[]=$query;
-			}
-		
-			$db=parent::$db;		
-			foreach ($queries as $query)
-			{
-				$query=static::compose_query($query);
-				$list=$db::query($query);
-				
-				while ($row=$db::fetch($list))
-				{
-					static::$data['entities_link'][$row['uniID']]=$row;
-					static::$links[$row['uniID1']]['A:'.$row['connection']][$row['uniID']]=$row;
-					static::$links[$row['uniID2']]['B:'.$row['connection']][$row['uniID']]=$row;
-					
-					$link_row=array('uniID'=>$row['uniID'], 'entity_type'=>'link');
-					static::$data['entities'][$row['uniID']]=$link_row;
-					$link_entity=Entity::create_from_db($link_row);
-					$link_entity->receive();
-				}
-			}
+			if (!is_null($call)) static::addCall($call);
 		}
 	}
 	
@@ -281,23 +206,18 @@ class EntityRetriever extends EntityDBOperator
 			unset(static::$queries[$table]);
 		}
 		
-		debug ('clearing queue: '.count(static::$queue));
-		$clear=array();
-		foreach (static::$queue as $id=>$options)
+		debug ('clearing calls queue: '.count(static::$calls));
+		// static::$calls=array_unique(static::$calls);
+		// $clear=array();
+		foreach (static::$calls as $call)
 		{
-			static::received($options);
-			$clear[]=$id;
-		}
-		foreach ($clear as $id)
-		{
-			unset(static::$queue[$id]);
+			static::makeCall($call);
 		}
 	}
 	
-	public static function add_to_queue($queue_data)
+	public static function addCall($call)
 	{
-		if (in_array($queue_data, static::$queue)) return;
-		static::$queue[]=$queue_data;
+		static::$calls[]=$call;
 	}
 }
 ?>

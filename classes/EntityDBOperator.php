@@ -53,7 +53,7 @@ abstract class EntityDBOperator
 				}
 				if (count($data)==1) $data=reset($data); // массив из одного элемента преобразуется в банальное значение.
 			}
-			else // рекурсивный вызов для обработки единичного значения.
+			if (!is_array($data)) // рекурсивный вызов для обработки единичного значения.
 			{
 				if (preg_match('/^uniID/', $field)) $data=static::unize($data);
 				$data=static::sql_value($data);
@@ -116,7 +116,11 @@ abstract class EntityDBOperator
 			else $fields='*';
 			
 			$where='';
-			if ( (array_key_exists('where', $query))&&(is_array($query['where'])) ) $where='WHERE '.static::compose_where($query['where'], $query['where_operator']);
+			if (
+				(array_key_exists('where', $query)) &&
+				(is_array($query['where']))
+				)
+				$where='WHERE '.static::compose_where($query['where'], ((isset($query['where_operator']))?($query['where_operator']):(null)) );
 			else $where='';
 			
 			$result="SELECT $fields FROM `$query[table]` $where ";

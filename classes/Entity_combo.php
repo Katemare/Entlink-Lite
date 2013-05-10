@@ -1,36 +1,22 @@
 <?
 class Entity_combo extends Entity
 {
-	public $model=array();
-	
-	static $mod_model=array();
-	
-	public function __construct()
+	static $mod_formats=array(
+		'form_new'=>'<form action="%form_action%" method="%form_method%"><input type=hidden name=action value="new">%parse[mode=input_new]%<br><input type=submit value="%submit_value%"></form>',
+		'form_edit'=>'<form action="%form_action%" method="%form_method%"><input type=hidden name=action value="edit"><input type=hidden name=uni value="%uni%">%parse[mode=input_edit]%<br><input type=submit value="%submit_value%"></form>',
+		'input_new'=>array('syn', 'values_html'),
+		'input_edit'=>array('syn', 'values_html'),
+		'form_method'=>'GET',
+		'form_action'=>'',
+		'submit_value'=>'Отправить...'
+	);
+
+	public function setFormats()
 	{
-		parent::__construct();
-		$this->setModel();
+		parent::setFormats();
+		$this->formats=array_merge($this->formats, self::$mod_formats);
 	}
-	
-	public function setModel()
-	{
-		if (count(self::$mod_model)) $this->mergeModel(self::$mod_model);
-	}
-	
-	public function mergeModel($tomerge)
-	{
-		foreach ($tomerge as $key=>$params)
-		{
-			if (!array_key_exists($key, $this->model)) $this->model[$key]=$params;
-			else
-			{
-				foreach ($params as $param=>$val)
-				{
-					$this->model[$key][$param]=$val;
-				}
-			}
-		}
-	}
-	
+
 	public function analyzeData()
 	{
 		if ($this->metadata['checked']) return;
@@ -109,16 +95,23 @@ class Entity_combo extends Entity
 	public function analyzeData_member(&$metadata, $member)
 	{
 		$member->analyzeData();
+
+		if ( (is_null($metadata['normalized'])) && (!$member->metadata('normalized')) )
+		{
+			$metadata['normalized']=false;
+		}
 				
-		if ( (is_null($metadata['valid'])) && (!$member->metadata('valid') )
+		if ( (is_null($metadata['valid'])) && (!$member->metadata('valid')) )
 		{
 			$metadata['valid']=false;
 		}
+		
 		if ( (is_null($metadata['correctable'])) && ($metadata['valid']===false) && (!$member->metadata('correctable') ) )
 		{
 			$metadata['correctable']=false;
 		}
-		if ( (is_null($metadata['safe'])) && (!$member->metadata('safe') )
+		
+		if ( (is_null($metadata['safe'])) && (!$member->metadata('safe')) )
 		{
 			$metadata['safe']=false;
 		}
@@ -126,10 +119,7 @@ class Entity_combo extends Entity
 		{
 			$metadata['securable']=false;
 		}
-		if ( (is_null($metadata['normalized'])) && (!$member->metadata('normalized')) )
-		{
-			$metadata['normalized']=false;
-		}
+		
 		if (is_null($metadata['source'])) $metadata['source']=$member->metadata('source');
 		elseif (($metadata['source']<>'mixed') && ($metadata['source']<>$member->metadata('source')) ) $metadata['source']='mixed';
 		if ( (is_null($metadata['changed'])) && ($member->metadata('changed'))) $metadata['changed']=true;	

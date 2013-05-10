@@ -2,26 +2,50 @@
 abstract class Entity_value extends Entity
 {
 	static $mod_formats=array(
-		'display'=>'%value%',
-		'value'=>array('self', 'displayValue'),
-		'dataerr'=>array('self', 'display_dataErr'),
+		'values_html'=>'%value%',
+		'value'=>array('func', 'displayValue'),
+		'input_new'=>array('syn', 'values_html'),
+		'input_edit'=>array('syn', 'values_html'),
+		'input_value'=>'<input type=text name="%input_name%" value="%value[raw]%">',
+		'input_name'=>array('func', 'input_name'),
+		'dataerr'=>array('func', 'display_dataErr'),
 		'nodata'=>'Нет данных!',
 		'invalid'=>'Неверные данные!',
 		'generic_dataerr'=>'Неверные данные!',
 		'err_msg'=>'<span style="color:red">Ошибка</span>: '
 	);
 	
-	// replace me!
+	public function setFormats()
+	{
+		parent::setFormats();
+		$this->formats=array_merge($this->formats, self::$mod_formats);
+	}
+	
+	// FIX: анализ контекста в этой функции какой-то кривой. Нужно более элегантное и интуитивно понятное решение.
 	public function displayValue($args, $context)
 	{
-		$this-analyzeContext($context);
-		$result='';
-		if (!$this->metadata('ready'))
+		$this->analyzeContext($context);
+		$result='';		
+		
+		if ( (in_array('raw', $args, 1)) || ($context->display_values()) )
+		// здесь есть возможность, что raw будет значением какого-нибудь именованного параметра. возможно, тут нужна какая-нибудь дополнительная функция по подготовке аргументов, как функция анализа контекста (которую, напротив, можно сильно сократить).
 		{
-			$result.= $this->expandCode('dataerr', '', $context);
-			$result.= $this->displayDefaultValue('', $context);
+			if (in_array('raw', $args, 1)) $err_report=true;
+			else $err_report=false;
+			
+			if (!$this->metadata('ready'))
+			{
+				if ($err_report) $result.= $this->expandCode('dataerr', '', $context);
+				$result.= $this->displayDefaultValue('', $context);
+			}
+			else $result= $this->displayVerifiedValue(null, $args, $context);
 		}
-		else $result= displayVerifiedValue(null, $args, $context);
+		// STUB: нужно добавить проверку прав! хотя скорее всего это в родительскую сущность.
+		elseif ($context->display_input())
+		{
+			$result=$this->expandCode('input_value', $args, $context);
+			return $result;
+		}
 		return $result;
 	}
 	
@@ -35,7 +59,7 @@ abstract class Entity_value extends Entity
 	
 	public function format_safe($val, $format)
 	{
-		if ($format=='html') $result= htmlspecialchars($val);
+		if ($format=='html') $result=htmlspecialchars($val);
 		elseif  ($format=='sql')
 		{
 			$result=mysql_real_escape_string($val);
@@ -43,16 +67,22 @@ abstract class Entity_value extends Entity
 		return $result;
 	}
 	
+	// STUB
+	public function input_name()
+	{
+		return 'test';
+	}
+	
 	public function displayDefaultValue($args='', $context)
 	{
 		$this->analyzeContext($context);
-		$val=$this->getValue('default', false);
+		$val=$this->model['default'];
 		return $this->displayVerifiedValue($val, $args, $context);
 	}
 	
 	public function display_dataErr($args, $context)
 	{
-		$this-analyzeContext($context);
+		$this->analyzeContext($context);
 		$meta=$this->metadata();
 		if (!$meta['got_data']) return $this->expandCode('error', array('nodata'), $context);
 		elseif (!$meta['valid']) return $this->expandCode('error', array('invalid'), $context);
@@ -62,17 +92,18 @@ abstract class Entity_value extends Entity
 	// STUB: может быть написано изящнее.
 	public function error($args, $context)
 	{
-		$this->analyzeContext();
+		$this->analyzeContext($context);
 		if ( ($context->display_values()) || ($context->display_input()) )
-			return
+			$result=
 				$this->expandCode('err_msg', '', $context) .
 				$this->expandCode($args[0], '', $context);
+		return $result;
 	}
 	
 	// должно ли значение changed сохраняться, если сущность теряет данные? возможны ли такие ситуации? по смыслу это поле должно сообщать, необходимо ли обновлять значения в БД.
 	public function analyzeData()
 	{
-		if ($this->metadata['checked']) return;
+		if ( (isset($this->metadata['checked'])) && ($this->metadata['checked']) ) return;
 		static $nodata=array(
 			'got_data'=>false,
 			'valid'=>false,
@@ -88,7 +119,7 @@ abstract class Entity_value extends Entity
 		{
 			$metadata['got_data']=false;
 		}
-		elseif (is_null($metaadta['source']))
+		elseif (is_null($this->metadata['source']))
 		{
 			$metadata['got_data']=false;
 		}
@@ -106,14 +137,10 @@ abstract class Entity_value extends Entity
 			);
 			
 			$this->analyzePresentData($metadata);
-			
-			if ( ($metadata['normalized']===false) && ($this->autonormal)) $this->normalizeData($metadata);
-			if ( ($metadata['valid']===false) && ($metadata['correctable']===true) && ($this->autocorrect)) $this->correctData($metadata);
-			if ($metadata['valid']===false) $metadata['safe']=false;
-			if ( ($metadata['safe']===false) && ($metadata['securable']===true) && ($this->autosecure)) $this->secureData($metadata);
 		}
 		
 		if ($metadata['got_data']===false) $metadata=$nodata;
+		else $metadata['source']=$this->metadata['source'];
 		$metadata['ready']= $metadata['got_data'] && $metadata['safe'] && ($metadata['valid']);
 		$metadata['checked']=true;
 		$this->metadata=$metadata;
@@ -134,13 +161,16 @@ abstract class Entity_value extends Entity
 			}
 			else $metadata['normalized']=false;
 			
-			$metadata['correct']=$this->isCorrect($this->data['value']);
-			if ($metadata['correct']===false)
+			$metadata['valid']=$this->isValid($this->data['value']);
+			if ($metadata['valid']===false)
 			{
-				$metadata['correctable']=$this->correctData($this->data['value'], false);
-				if ( ($metadata['correctable']==true) && ($this->autocorrect))
+				$valid=$this->correctData($this->data['value']);
+				$metadata['correctable']=!is_null($valid);
+				if ( ($metadata['correctable']===true) && ($this->autocorrect))
 				{
-					$this->data['value']=$this->correctData($this->data['value']);
+					$metadata['valid']=true;
+					$metadata['correctable']=null;
+					$this->data['value']=$valid;
 					$this->data['changed']=true;
 				}
 			}
@@ -148,54 +178,46 @@ abstract class Entity_value extends Entity
 			$metadata['safe']=$this->isSafe($this->data['value']);
 			if ($metadata['safe']===false)
 			{
-				$metadata['securable']=$this->secureData($this->data['value'], false);
-				if ( ($metadata['securable']==true) && ($this->autosecure))
+				$safe=$this->secureData($this->data['value']);
+				$metadata['securable']=!is_null($safe);
+				if ( ($metadata['securable']===true) && ($this->autosecure))
 				{
-					$this->data['value']=$this->secureData($this->data['value']);
+					$metadata['safe']=true;
+					$metadata['securable']=null;
+					$this->data['value']=$safe;
 					$this->data['changed']=true;
 				}
 			}
 		}
 	}
 	
-	// inherit me!
+	// inherit us!
 	public function normalizeData($val)
 	{
 		return $val;
 	}
 	
-	public function correctData($val, $doit=true)
+	public function correctData($val)
 	{
-		if (!is_null($this->data['corrected'])) $result= $this->data['corrected'];
-		else
-		{
-			$result=$this->correctData_produce($val);
-			$this->data['corrected']=$result;
-		}
-		if ($doit)
-		{
-			$this->data['value']=$result;
-			return $
-		return $result;
+		$val=$this->correctData_produce($val);
+		if (!isValid($val)) return null;
+		else return $val;
 	}
-	// inherit me!	
 	public function correctData_produce($val)
 	{
 		return $val;
 	}
 	
-	public function secureData($val, $doit=true)
+	public function secureData($val)
 	{
-		if (is_null($metadata)) $meta=$this->metadata;
-		else $meta=$metadata;
-		
-		//if  ($metadata['securable']!==true) return false;
-		
-		$meta['secured']=true;
-		
-		if (is_null($metadata)) $this->metadata=$meta;
-		else $metadata=$meta;
-	} 
+		$val=$this->secureData_produce($val);
+		if (!isSafe($val)) return null;
+		else return $val;
+	}
+	public function secureData_produce($val)
+	{
+		return $val;
+	}
 	
 	public function safe_source($source)
 	{
@@ -203,10 +225,14 @@ abstract class Entity_value extends Entity
 		return in_array($source, $safe_sources, 1);
 	}
 	
-	// inherit me!
-	public functon isValid($val)
+	// inherit us!
+	public function isValid($val)
 	{
 		return true;
-	}	
+	}
+	public function isSafe($val)
+	{
+		return true;
+	}
 }
 ?>
