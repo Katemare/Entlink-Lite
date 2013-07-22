@@ -72,35 +72,31 @@ class EntityRetriever extends EntityDBOperator
 		else
 		{
 			$conditions=static::$queries_by_conditions[$table];
-			$mergeable=array(); $unmergeable=array();
+			$tomerge=array();
 			foreach ($conditions as $key=>$condset)
 			{
-				$numkeys=false;
+				$fields_hash=array();
 				foreach ($condset as $key2=>$cond)
 				{
-					if (is_numeric($key2))
-					{
-						$numkeys=true;
-						break;
-					}
+					if (is_numeric($key2)) $fields_hash[]=$cond;
+					else $fields_hash[]=$key2;
 				}
-				if (!$numkeys)
-				{
-					$fields_hash=implode(',', sort(array_keys($condset)));
-					if (!isset($mergeable[$fields_hash])) $mergeable[$fields_hash]=array();
-					$mergeable[$fields_hash][]=$key;
-				}
-				else $unmergeable[]=$key;
+				sort($fields_hash);
+				$fields_hash=implode(',', $fields_hash);
+				if (isset($tomerge[$fields_hash])) $tomerge[$fields_hash][]=$key;
+				else $tomerge[$fields_hash]=array($key);
 			}
 			
-			foreach ($mergeable as $keys)
+			foreach ($tomerge as $keys)
 			{
+				if (count($keys)==1) continue;
 				$field_vals=array();
 				foreach ($keys as $key)
 				{
 					$condset=$conditions[$key];
 					foreach ($condset as $field=>$val)
 					{
+						if (is_numeric($field)) continue;
 						if (!isset($field_vals[$field])) $field_vals[$field]=array();
 						$field_vals[]=$val;
 					}
